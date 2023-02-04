@@ -343,7 +343,7 @@ typedef struct VuVirtq {
     /* Notification enabled? */
     bool notification;
 
-    int inuse;
+    unsigned int inuse;
 
     vu_queue_handler_cb handler;
 
@@ -472,6 +472,15 @@ bool vu_init(VuDev *dev,
  * Cleans up the VuDev context
  */
 void vu_deinit(VuDev *dev);
+
+
+/**
+ * vu_request_to_string: return string for vhost message request
+ * @req: VhostUserMsg request
+ *
+ * Returns a const string, do not free.
+ */
+const char *vu_request_to_string(unsigned int req);
 
 /**
  * vu_dispatch:

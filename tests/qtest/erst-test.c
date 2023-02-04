@@ -10,8 +10,7 @@
 #include "qemu/osdep.h"
 #include <glib/gstdio.h>
 #include "libqos/libqos-pc.h"
-#include "libqos/libqtest.h"
-#include "qemu-common.h"
+#include "libqtest.h"
 
 #include "hw/pci/pci.h"
 
@@ -75,7 +74,7 @@ static inline uint64_t in_reg64(ERSTState *s, unsigned reg)
     uint64_t res;
 
     res = qpci_io_readq(s->dev, s->reg_bar, reg);
-    g_test_message("*%s -> %016llx", name, (unsigned long long)res);
+    g_test_message("*%s -> %016" PRIx64, name, res);
 
     return res;
 }
@@ -99,7 +98,7 @@ static void setup_vm_cmd(ERSTState *s, const char *cmd)
     const char *arch = qtest_get_arch();
 
     if (strcmp(arch, "i386") == 0 || strcmp(arch, "x86_64") == 0) {
-        s->qs = qtest_pc_boot(cmd);
+        s->qs = qtest_pc_boot("%s", cmd);
     } else {
         g_printerr("erst-test tests are only available on x86\n");
         exit(EXIT_FAILURE);
@@ -155,10 +154,7 @@ static void test_acpi_erst_basic(void)
 
 int main(int argc, char **argv)
 {
-    int ret;
-
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/acpi-erst/basic", test_acpi_erst_basic);
-    ret = g_test_run();
-    return ret;
+    return g_test_run();
 }
