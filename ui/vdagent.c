@@ -2,6 +2,7 @@
 #include "qapi/error.h"
 #include "chardev/char.h"
 #include "qemu/buffer.h"
+#include "qemu/error-report.h"
 #include "qemu/option.h"
 #include "qemu/units.h"
 #include "hw/qdev-core.h"
@@ -869,8 +870,11 @@ static void vdagent_disconnect(VDAgentChardev *vd)
 
 static void vdagent_chr_set_fe_open(struct Chardev *chr, int fe_open)
 {
+    VDAgentChardev *vd = QEMU_VDAGENT_CHARDEV(chr);
+
     if (!fe_open) {
         trace_vdagent_close();
+        vdagent_disconnect(vd);
         /* To reset_serial, we CLOSED our side. Make sure the other end knows we
          * are ready again. */
         qemu_chr_be_event(chr, CHR_EVENT_OPENED);
@@ -922,6 +926,9 @@ static void vdagent_chr_fini(Object *obj)
 
     migrate_del_blocker(vd->migration_blocker);
     vdagent_disconnect(vd);
+    if (vd->mouse_hs) {
+        qemu_input_handler_unregister(vd->mouse_hs);
+    }
     buffer_free(&vd->outbuf);
     error_free(vd->migration_blocker);
 }

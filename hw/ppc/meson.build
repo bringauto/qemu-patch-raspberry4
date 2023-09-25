@@ -15,6 +15,7 @@ ppc_ss.add(when: 'CONFIG_PSERIES', if_true: files(
   'spapr_vio.c',
   'spapr_events.c',
   'spapr_hcall.c',
+  'spapr_nested.c',
   'spapr_iommu.c',
   'spapr_rtas.c',
   'spapr_pci.c',
@@ -35,7 +36,6 @@ ppc_ss.add(when: ['CONFIG_PSERIES', 'CONFIG_TCG'], if_true: files(
 ppc_ss.add(when: 'CONFIG_SPAPR_RNG', if_true: files('spapr_rng.c'))
 ppc_ss.add(when: ['CONFIG_PSERIES', 'CONFIG_LINUX'], if_true: files(
   'spapr_pci_vfio.c',
-  'spapr_pci_nvlink2.c'
 ))
 
 # IBM PowerNV

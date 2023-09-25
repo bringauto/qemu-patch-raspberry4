@@ -191,6 +191,7 @@ class QEMUMachine:
             self.sock_dir, f"{self._name}.con"
         )
         self._console_socket: Optional[socket.socket] = None
+        self._console_file: Optional[socket.SocketIO] = None
         self._remove_files: List[str] = []
         self._user_killed = False
         self._quit_issued = False
@@ -337,18 +338,18 @@ class QEMUMachine:
             self._remove_files.append(self._console_address)
 
         if self._qmp_set:
-            monitor_address = None
-            sock = None
             if self._monitor_address is None:
                 self._sock_pair = socket.socketpair()
                 sock = self._sock_pair[1]
             if isinstance(self._monitor_address, str):
                 self._remove_files.append(self._monitor_address)
-                monitor_address = self._monitor_address
+
+            sock_or_addr = self._monitor_address or sock
+            assert sock_or_addr is not None
+
             self._qmp_connection = QEMUMonitorProtocol(
-                address=monitor_address,
-                sock=sock,
-                server=True,
+                sock_or_addr,
+                server=bool(self._monitor_address),
                 nickname=self._name
             )
 
@@ -370,7 +371,10 @@ class QEMUMachine:
         if self._sock_pair:
             self._sock_pair[0].close()
         if self._qmp_connection:
-            self._qmp.accept(self._qmp_timer)
+            if self._sock_pair:
+                self._qmp.connect()
+            else:
+                self._qmp.accept(self._qmp_timer)
 
     def _close_qemu_log_file(self) -> None:
         if self._qemu_log_file is not None:
@@ -506,6 +510,11 @@ class QEMUMachine:
         # If we keep the console socket open, we may deadlock waiting
         # for QEMU to exit, while QEMU is waiting for the socket to
         # become writable.
+        if self._console_file is not None:
+            LOG.debug("Closing console file")
+            self._console_file.close()
+            self._console_file = None
+
         if self._console_socket is not None:
             LOG.debug("Closing console socket")
             self._console_socket.close()
@@ -871,11 +880,24 @@ class QEMUMachine:
         Returns a socket connected to the console
         """
         if self._console_socket is None:
+            LOG.debug("Opening console socket")
             self._console_socket = console_socket.ConsoleSocket(
                 self._console_address,
                 file=self._console_log_path,
                 drain=self._drain_console)
         return self._console_socket
+
+    @property
+    def console_file(self) -> socket.SocketIO:
+        """
+        Returns a file associated with the console socket
+        """
+        if self._console_file is None:
+            LOG.debug("Opening console file")
+            self._console_file = self.console_socket.makefile(mode='rb',
+                                                              buffering=0,
+                                                              encoding='utf-8')
+        return self._console_file
 
     @property
     def temp_dir(self) -> str:

@@ -68,7 +68,7 @@ static time_t qemu_ref_timedate(QEMUClockType clock)
     return value;
 }
 
-void qemu_get_timedate(struct tm *tm, int offset)
+void qemu_get_timedate(struct tm *tm, time_t offset)
 {
     time_t ti = qemu_ref_timedate(rtc_clock);
 
@@ -85,7 +85,7 @@ void qemu_get_timedate(struct tm *tm, int offset)
     }
 }
 
-int qemu_timedate_diff(struct tm *tm)
+time_t qemu_timedate_diff(struct tm *tm)
 {
     time_t seconds;
 
@@ -152,11 +152,8 @@ void configure_rtc(QemuOpts *opts)
         if (!strcmp(value, "utc")) {
             rtc_base_type = RTC_BASE_UTC;
         } else if (!strcmp(value, "localtime")) {
-            Error *blocker = NULL;
             rtc_base_type = RTC_BASE_LOCALTIME;
-            error_setg(&blocker, QERR_REPLAY_NOT_SUPPORTED,
-                      "-rtc base=localtime");
-            replay_add_blocker(blocker);
+            replay_add_blocker("-rtc base=localtime");
         } else {
             rtc_base_type = RTC_BASE_DATETIME;
             configure_rtc_base_datetime(value);

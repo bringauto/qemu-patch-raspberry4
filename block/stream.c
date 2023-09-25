@@ -16,7 +16,6 @@
 #include "block/block_int.h"
 #include "block/blockjob_int.h"
 #include "qapi/error.h"
-#include "qapi/qmp/qerror.h"
 #include "qapi/qmp/qdict.h"
 #include "qemu/ratelimit.h"
 #include "sysemu/block-backend.h"
@@ -55,6 +54,7 @@ static int stream_prepare(Job *job)
 {
     StreamBlockJob *s = container_of(job, StreamBlockJob, common.job);
     BlockDriverState *unfiltered_bs = bdrv_skip_filters(s->target_bs);
+    BlockDriverState *unfiltered_bs_cow = bdrv_cow_bs(unfiltered_bs);
     BlockDriverState *base;
     BlockDriverState *unfiltered_base;
     Error *local_err = NULL;
@@ -65,13 +65,18 @@ static int stream_prepare(Job *job)
     s->cor_filter_bs = NULL;
 
     /*
-     * bdrv_set_backing_hd() requires that unfiltered_bs is drained. Drain
-     * already here and use bdrv_set_backing_hd_drained() instead because
-     * the polling during drained_begin() might change the graph, and if we do
-     * this only later, we may end up working with the wrong base node (or it
-     * might even have gone away by the time we want to use it).
+     * bdrv_set_backing_hd() requires that the unfiltered_bs and the COW child
+     * of unfiltered_bs is drained. Drain already here and use
+     * bdrv_set_backing_hd_drained() instead because the polling during
+     * drained_begin() might change the graph, and if we do this only later, we
+     * may end up working with the wrong base node (or it might even have gone
+     * away by the time we want to use it).
      */
     bdrv_drained_begin(unfiltered_bs);
+    if (unfiltered_bs_cow) {
+        bdrv_ref(unfiltered_bs_cow);
+        bdrv_drained_begin(unfiltered_bs_cow);
+    }
 
     base = bdrv_filter_or_cow_bs(s->above_base);
     unfiltered_base = bdrv_skip_filters(base);
@@ -101,6 +106,10 @@ static int stream_prepare(Job *job)
     }
 
 out:
+    if (unfiltered_bs_cow) {
+        bdrv_drained_end(unfiltered_bs_cow);
+        bdrv_unref(unfiltered_bs_cow);
+    }
     bdrv_drained_end(unfiltered_bs);
     return ret;
 }
@@ -132,7 +141,6 @@ static int coroutine_fn stream_run(Job *job, Error **errp)
     BlockDriverState *unfiltered_bs = bdrv_skip_filters(s->target_bs);
     int64_t len;
     int64_t offset = 0;
-    uint64_t delay_ns = 0;
     int error = 0;
     int64_t n = 0; /* bytes */
 
@@ -141,9 +149,11 @@ static int coroutine_fn stream_run(Job *job, Error **errp)
         return 0;
     }
 
-    len = bdrv_getlength(s->target_bs);
-    if (len < 0) {
-        return len;
+    WITH_GRAPH_RDLOCK_GUARD() {
+        len = bdrv_co_getlength(s->target_bs);
+        if (len < 0) {
+            return len;
+        }
     }
     job_progress_set_remaining(&s->common.job, len);
 
@@ -154,28 +164,32 @@ static int coroutine_fn stream_run(Job *job, Error **errp)
         /* Note that even when no rate limit is applied we need to yield
          * with no pending I/O here so that bdrv_drain_all() returns.
          */
-        job_sleep_ns(&s->common.job, delay_ns);
+        block_job_ratelimit_sleep(&s->common);
         if (job_is_cancelled(&s->common.job)) {
             break;
         }
 
         copy = false;
 
-        ret = bdrv_is_allocated(unfiltered_bs, offset, STREAM_CHUNK, &n);
-        if (ret == 1) {
-            /* Allocated in the top, no need to copy.  */
-        } else if (ret >= 0) {
-            /* Copy if allocated in the intermediate images.  Limit to the
-             * known-unallocated area [offset, offset+n*BDRV_SECTOR_SIZE).  */
-            ret = bdrv_is_allocated_above(bdrv_cow_bs(unfiltered_bs),
-                                          s->base_overlay, true,
-                                          offset, n, &n);
-            /* Finish early if end of backing file has been reached */
-            if (ret == 0 && n == 0) {
-                n = len - offset;
-            }
+        WITH_GRAPH_RDLOCK_GUARD() {
+            ret = bdrv_is_allocated(unfiltered_bs, offset, STREAM_CHUNK, &n);
+            if (ret == 1) {
+                /* Allocated in the top, no need to copy.  */
+            } else if (ret >= 0) {
+                /*
+                 * Copy if allocated in the intermediate images.  Limit to the
+                 * known-unallocated area [offset, offset+n*BDRV_SECTOR_SIZE).
+                 */
+                ret = bdrv_is_allocated_above(bdrv_cow_bs(unfiltered_bs),
+                                            s->base_overlay, true,
+                                            offset, n, &n);
+                /* Finish early if end of backing file has been reached */
+                if (ret == 0 && n == 0) {
+                    n = len - offset;
+                }
 
-            copy = (ret > 0);
+                copy = (ret > 0);
+            }
         }
         trace_stream_one_iteration(s, offset, n, ret);
         if (copy) {
@@ -199,9 +213,7 @@ static int coroutine_fn stream_run(Job *job, Error **errp)
         /* Publish progress */
         job_progress_update(&s->common.job, n);
         if (copy) {
-            delay_ns = block_job_ratelimit_get_delay(&s->common, n);
-        } else {
-            delay_ns = 0;
+            block_job_ratelimit_processed_bytes(&s->common, n);
         }
     }
 

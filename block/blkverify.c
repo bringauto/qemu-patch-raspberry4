@@ -151,11 +151,14 @@ static void blkverify_close(BlockDriverState *bs)
 {
     BDRVBlkverifyState *s = bs->opaque;
 
+    bdrv_graph_wrlock(NULL);
     bdrv_unref_child(bs, s->test_file);
     s->test_file = NULL;
+    bdrv_graph_wrunlock();
 }
 
-static int64_t coroutine_fn blkverify_co_getlength(BlockDriverState *bs)
+static int64_t coroutine_fn GRAPH_RDLOCK
+blkverify_co_getlength(BlockDriverState *bs)
 {
     BDRVBlkverifyState *s = bs->opaque;
 
@@ -256,7 +259,7 @@ blkverify_co_pwritev(BlockDriverState *bs, int64_t offset, int64_t bytes,
     return blkverify_co_prwv(bs, &r, offset, bytes, qiov, qiov, flags, true);
 }
 
-static int coroutine_fn blkverify_co_flush(BlockDriverState *bs)
+static int coroutine_fn GRAPH_RDLOCK blkverify_co_flush(BlockDriverState *bs)
 {
     BDRVBlkverifyState *s = bs->opaque;
 
@@ -264,8 +267,9 @@ static int coroutine_fn blkverify_co_flush(BlockDriverState *bs)
     return bdrv_co_flush(s->test_file->bs);
 }
 
-static bool blkverify_recurse_can_replace(BlockDriverState *bs,
-                                          BlockDriverState *to_replace)
+static bool GRAPH_RDLOCK
+blkverify_recurse_can_replace(BlockDriverState *bs,
+                              BlockDriverState *to_replace)
 {
     BDRVBlkverifyState *s = bs->opaque;
 

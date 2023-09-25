@@ -58,13 +58,15 @@ BlockDriver *bdrv_find_protocol(const char *filename,
                                 Error **errp);
 BlockDriver *bdrv_find_format(const char *format_name);
 
-int coroutine_fn bdrv_co_create(BlockDriver *drv, const char *filename,
-                                QemuOpts *opts, Error **errp);
+int coroutine_fn GRAPH_UNLOCKED
+bdrv_co_create(BlockDriver *drv, const char *filename, QemuOpts *opts,
+               Error **errp);
+
 int co_wrapper bdrv_create(BlockDriver *drv, const char *filename,
                            QemuOpts *opts, Error **errp);
 
-int coroutine_fn bdrv_co_create_file(const char *filename, QemuOpts *opts,
-                                     Error **errp);
+int coroutine_fn GRAPH_UNLOCKED
+bdrv_co_create_file(const char *filename, QemuOpts *opts, Error **errp);
 
 BlockDriverState *bdrv_new(void);
 int bdrv_append(BlockDriverState *bs_new, BlockDriverState *bs_top,
@@ -77,16 +79,26 @@ BlockDriverState *bdrv_insert_node(BlockDriverState *bs, QDict *node_options,
                                    int flags, Error **errp);
 int bdrv_drop_filter(BlockDriverState *bs, Error **errp);
 
-BdrvChild *bdrv_open_child(const char *filename,
-                           QDict *options, const char *bdref_key,
-                           BlockDriverState *parent,
-                           const BdrvChildClass *child_class,
-                           BdrvChildRole child_role,
-                           bool allow_none, Error **errp);
+BdrvChild * no_coroutine_fn
+bdrv_open_child(const char *filename, QDict *options, const char *bdref_key,
+                BlockDriverState *parent, const BdrvChildClass *child_class,
+                BdrvChildRole child_role, bool allow_none, Error **errp);
+
+BdrvChild * coroutine_fn no_co_wrapper
+bdrv_co_open_child(const char *filename, QDict *options, const char *bdref_key,
+                BlockDriverState *parent, const BdrvChildClass *child_class,
+                BdrvChildRole child_role, bool allow_none, Error **errp);
+
 int bdrv_open_file_child(const char *filename,
                          QDict *options, const char *bdref_key,
                          BlockDriverState *parent, Error **errp);
-BlockDriverState *bdrv_open_blockdev_ref(BlockdevRef *ref, Error **errp);
+
+BlockDriverState * no_coroutine_fn
+bdrv_open_blockdev_ref(BlockdevRef *ref, Error **errp);
+
+BlockDriverState * coroutine_fn no_co_wrapper
+bdrv_co_open_blockdev_ref(BlockdevRef *ref, Error **errp);
+
 int bdrv_set_backing_hd(BlockDriverState *bs, BlockDriverState *backing_hd,
                         Error **errp);
 int bdrv_set_backing_hd_drained(BlockDriverState *bs,
@@ -94,8 +106,15 @@ int bdrv_set_backing_hd_drained(BlockDriverState *bs,
                                 Error **errp);
 int bdrv_open_backing_file(BlockDriverState *bs, QDict *parent_options,
                            const char *bdref_key, Error **errp);
-BlockDriverState *bdrv_open(const char *filename, const char *reference,
-                            QDict *options, int flags, Error **errp);
+
+BlockDriverState * no_coroutine_fn
+bdrv_open(const char *filename, const char *reference, QDict *options,
+          int flags, Error **errp);
+
+BlockDriverState * coroutine_fn no_co_wrapper
+bdrv_co_open(const char *filename, const char *reference,
+             QDict *options, int flags, Error **errp);
+
 BlockDriverState *bdrv_new_open_driver_opts(BlockDriver *drv,
                                             const char *node_name,
                                             QDict *options, int flags,
@@ -114,7 +133,10 @@ int bdrv_reopen_set_read_only(BlockDriverState *bs, bool read_only,
 BlockDriverState *bdrv_find_backing_image(BlockDriverState *bs,
                                           const char *backing_file);
 void bdrv_refresh_filename(BlockDriverState *bs);
-void bdrv_refresh_limits(BlockDriverState *bs, Transaction *tran, Error **errp);
+
+void GRAPH_RDLOCK
+bdrv_refresh_limits(BlockDriverState *bs, Transaction *tran, Error **errp);
+
 int bdrv_commit(BlockDriverState *bs);
 int bdrv_make_empty(BdrvChild *c, Error **errp);
 int bdrv_change_backing_file(BlockDriverState *bs, const char *backing_file,
@@ -144,10 +166,15 @@ int bdrv_amend_options(BlockDriverState *bs_new, QemuOpts *opts,
                        Error **errp);
 
 /* check if a named node can be replaced when doing drive-mirror */
-BlockDriverState *check_to_replace_node(BlockDriverState *parent_bs,
-                                        const char *node_name, Error **errp);
+BlockDriverState * GRAPH_RDLOCK
+check_to_replace_node(BlockDriverState *parent_bs, const char *node_name,
+                      Error **errp);
 
-int bdrv_activate(BlockDriverState *bs, Error **errp);
+int no_coroutine_fn bdrv_activate(BlockDriverState *bs, Error **errp);
+
+int coroutine_fn no_co_wrapper
+bdrv_co_activate(BlockDriverState *bs, Error **errp);
+
 void bdrv_activate_all(Error **errp);
 int bdrv_inactivate_all(void);
 
@@ -157,6 +184,8 @@ void bdrv_drain_all_begin(void);
 void bdrv_drain_all_begin_nopoll(void);
 void bdrv_drain_all_end(void);
 void bdrv_drain_all(void);
+
+void bdrv_aio_cancel(BlockAIOCB *acb);
 
 int bdrv_has_zero_init_1(BlockDriverState *bs);
 int bdrv_has_zero_init(BlockDriverState *bs);
@@ -195,14 +224,23 @@ void bdrv_img_create(const char *filename, const char *fmt,
                      bool quiet, Error **errp);
 
 void bdrv_ref(BlockDriverState *bs);
-void bdrv_unref(BlockDriverState *bs);
-void bdrv_unref_child(BlockDriverState *parent, BdrvChild *child);
-BdrvChild *bdrv_attach_child(BlockDriverState *parent_bs,
-                             BlockDriverState *child_bs,
-                             const char *child_name,
-                             const BdrvChildClass *child_class,
-                             BdrvChildRole child_role,
-                             Error **errp);
+void no_coroutine_fn bdrv_unref(BlockDriverState *bs);
+void coroutine_fn no_co_wrapper bdrv_co_unref(BlockDriverState *bs);
+void GRAPH_WRLOCK bdrv_schedule_unref(BlockDriverState *bs);
+
+void GRAPH_WRLOCK
+bdrv_unref_child(BlockDriverState *parent, BdrvChild *child);
+
+void coroutine_fn no_co_wrapper_bdrv_wrlock
+bdrv_co_unref_child(BlockDriverState *parent, BdrvChild *child);
+
+BdrvChild * GRAPH_WRLOCK
+bdrv_attach_child(BlockDriverState *parent_bs,
+                  BlockDriverState *child_bs,
+                  const char *child_name,
+                  const BdrvChildClass *child_class,
+                  BdrvChildRole child_role,
+                  Error **errp);
 
 bool bdrv_op_is_blocked(BlockDriverState *bs, BlockOpType op, Error **errp);
 void bdrv_op_block(BlockDriverState *bs, BlockOpType op, Error *reason);
@@ -240,9 +278,11 @@ int bdrv_try_change_aio_context(BlockDriverState *bs, AioContext *ctx,
 int bdrv_probe_blocksizes(BlockDriverState *bs, BlockSizes *bsz);
 int bdrv_probe_geometry(BlockDriverState *bs, HDGeometry *geo);
 
-void bdrv_add_child(BlockDriverState *parent, BlockDriverState *child,
-                    Error **errp);
-void bdrv_del_child(BlockDriverState *parent, BdrvChild *child, Error **errp);
+void GRAPH_WRLOCK
+bdrv_add_child(BlockDriverState *parent, BlockDriverState *child, Error **errp);
+
+void GRAPH_WRLOCK
+bdrv_del_child(BlockDriverState *parent, BdrvChild *child, Error **errp);
 
 /**
  *

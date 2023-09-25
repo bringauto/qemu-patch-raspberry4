@@ -21,6 +21,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu.h"
+#include "gdbstub/user.h"
 #include "signal-common.h"
 #include "trace.h"
 #include "hw/core/tcg-cpu-ops.h"
@@ -43,7 +44,7 @@ static inline int sas_ss_flags(TaskState *ts, unsigned long sp)
 }
 
 /*
- * The BSD ABIs use the same singal numbers across all the CPU architectures, so
+ * The BSD ABIs use the same signal numbers across all the CPU architectures, so
  * (unlike Linux) these functions are just the identity mapping. This might not
  * be true for XyzBSD running on AbcBSD, which doesn't currently work.
  */
@@ -240,7 +241,7 @@ static inline void host_to_target_siginfo_noswap(target_siginfo_t *tinfo,
 #endif
         /*
          * Unsure that this can actually be generated, and our support for
-         * capsicum is somewhere between weak and non-existant, but if we get
+         * capsicum is somewhere between weak and non-existent, but if we get
          * one, then we know what to save.
          */
 #ifdef QEMU_SI_CAPSICUM
@@ -318,7 +319,7 @@ int block_signals(void)
     /*
      * It's OK to block everything including SIGSEGV, because we won't run any
      * further guest code before unblocking signals in
-     * process_pending_signals(). We depend on the FreeBSD behaivor here where
+     * process_pending_signals(). We depend on the FreeBSD behavior here where
      * this will only affect this thread's signal mask. We don't use
      * pthread_sigmask which might seem more correct because that routine also
      * does odd things with SIGCANCEL to implement pthread_cancel().
@@ -786,10 +787,7 @@ static int reset_signal_mask(target_ucontext_t *ucontext)
     TaskState *ts = (TaskState *)thread_cpu->opaque;
 
     for (i = 0; i < TARGET_NSIG_WORDS; i++) {
-        if (__get_user(target_set.__bits[i],
-                    &ucontext->uc_sigmask.__bits[i])) {
-            return -TARGET_EFAULT;
-        }
+        __get_user(target_set.__bits[i], &ucontext->uc_sigmask.__bits[i]);
     }
     target_to_host_sigset_internal(&blocked, &target_set);
     ts->signal_mask = blocked;

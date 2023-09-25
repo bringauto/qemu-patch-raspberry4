@@ -534,12 +534,26 @@ static MemTxResult access_with_adjusted_size(hwaddr addr,
     unsigned access_size;
     unsigned i;
     MemTxResult r = MEMTX_OK;
+    bool reentrancy_guard_applied = false;
 
     if (!access_size_min) {
         access_size_min = 1;
     }
     if (!access_size_max) {
         access_size_max = 4;
+    }
+
+    /* Do not allow more than one simultaneous access to a device's IO Regions */
+    if (mr->dev && !mr->disable_reentrancy_guard &&
+        !mr->ram_device && !mr->ram && !mr->rom_device && !mr->readonly) {
+        if (mr->dev->mem_reentrancy_guard.engaged_in_io) {
+            warn_report_once("Blocked re-entrant IO on MemoryRegion: "
+                             "%s at addr: 0x%" HWADDR_PRIX,
+                             memory_region_name(mr), addr);
+            return MEMTX_ACCESS_ERROR;
+        }
+        mr->dev->mem_reentrancy_guard.engaged_in_io = true;
+        reentrancy_guard_applied = true;
     }
 
     /* FIXME: support unaligned access? */
@@ -555,6 +569,9 @@ static MemTxResult access_with_adjusted_size(hwaddr addr,
             r |= access_fn(mr, addr + i, value, access_size, i * 8,
                         access_mask, attrs);
         }
+    }
+    if (mr->dev && reentrancy_guard_applied) {
+        mr->dev->mem_reentrancy_guard.engaged_in_io = false;
     }
     return r;
 }
@@ -824,6 +841,10 @@ static void address_space_update_ioeventfds(AddressSpace *as)
     MemoryRegionIoeventfd *ioeventfds;
     AddrRange tmp;
     unsigned i;
+
+    if (!as->ioeventfd_notifiers) {
+        return;
+    }
 
     /*
      * It is likely that the number of ioeventfds hasn't changed much, so use
@@ -1170,6 +1191,7 @@ static void memory_region_do_init(MemoryRegion *mr,
     }
     mr->name = g_strdup(name);
     mr->owner = owner;
+    mr->dev = (DeviceState *) object_dynamic_cast(mr->owner, TYPE_DEVICE);
     mr->ram_block = NULL;
 
     if (name) {
@@ -1601,18 +1623,18 @@ void memory_region_init_ram_from_file(MemoryRegion *mr,
                                       uint64_t align,
                                       uint32_t ram_flags,
                                       const char *path,
-                                      bool readonly,
+                                      ram_addr_t offset,
                                       Error **errp)
 {
     Error *err = NULL;
     memory_region_init(mr, owner, name, size);
     mr->ram = true;
-    mr->readonly = readonly;
+    mr->readonly = !!(ram_flags & RAM_READONLY);
     mr->terminates = true;
     mr->destructor = memory_region_destructor_ram;
     mr->align = align;
     mr->ram_block = qemu_ram_alloc_from_file(size, mr, ram_flags, path,
-                                             readonly, &err);
+                                             offset, &err);
     if (err) {
         mr->size = int128_zero();
         object_unparent(OBJECT(mr));
@@ -1632,10 +1654,11 @@ void memory_region_init_ram_from_fd(MemoryRegion *mr,
     Error *err = NULL;
     memory_region_init(mr, owner, name, size);
     mr->ram = true;
+    mr->readonly = !!(ram_flags & RAM_READONLY);
     mr->terminates = true;
     mr->destructor = memory_region_destructor_ram;
     mr->ram_block = qemu_ram_alloc_from_fd(size, mr, ram_flags, fd, offset,
-                                           false, &err);
+                                           &err);
     if (err) {
         mr->size = int128_zero();
         object_unparent(OBJECT(mr));
@@ -1996,6 +2019,19 @@ void memory_region_notify_iommu_one(IOMMUNotifier *notifier,
     }
 }
 
+void memory_region_unmap_iommu_notifier_range(IOMMUNotifier *notifier)
+{
+    IOMMUTLBEvent event;
+
+    event.type = IOMMU_NOTIFIER_UNMAP;
+    event.entry.target_as = &address_space_memory;
+    event.entry.iova = notifier->start;
+    event.entry.perm = IOMMU_NONE;
+    event.entry.addr_mask = notifier->end - notifier->start;
+
+    memory_region_notify_iommu_one(notifier, &event);
+}
+
 void memory_region_notify_iommu(IOMMUMemoryRegion *iommu_mr,
                                 int iommu_idx,
                                 IOMMUTLBEvent event)
@@ -2224,7 +2260,7 @@ void memory_region_set_dirty(MemoryRegion *mr, hwaddr addr,
  * If memory region `mr' is NULL, do global sync.  Otherwise, sync
  * dirty bitmap for the specified memory region.
  */
-static void memory_region_sync_dirty_bitmap(MemoryRegion *mr)
+static void memory_region_sync_dirty_bitmap(MemoryRegion *mr, bool last_stage)
 {
     MemoryListener *listener;
     AddressSpace *as;
@@ -2254,7 +2290,7 @@ static void memory_region_sync_dirty_bitmap(MemoryRegion *mr)
              * is to do a global sync, because we are not capable to
              * sync in a finer granularity.
              */
-            listener->log_sync_global(listener);
+            listener->log_sync_global(listener, last_stage);
             trace_memory_region_sync_dirty(mr ? mr->name : "(all)", listener->name, 1);
         }
     }
@@ -2318,7 +2354,7 @@ DirtyBitmapSnapshot *memory_region_snapshot_and_clear_dirty(MemoryRegion *mr,
 {
     DirtyBitmapSnapshot *snapshot;
     assert(mr->ram_block);
-    memory_region_sync_dirty_bitmap(mr);
+    memory_region_sync_dirty_bitmap(mr, false);
     snapshot = cpu_physical_memory_snapshot_and_clear_dirty(mr, addr, size, client);
     memory_global_after_dirty_log_sync();
     return snapshot;
@@ -2844,9 +2880,9 @@ bool memory_region_present(MemoryRegion *container, hwaddr addr)
     return mr && mr != container;
 }
 
-void memory_global_dirty_log_sync(void)
+void memory_global_dirty_log_sync(bool last_stage)
 {
-    memory_region_sync_dirty_bitmap(NULL);
+    memory_region_sync_dirty_bitmap(NULL, last_stage);
 }
 
 void memory_global_after_dirty_log_sync(void)
@@ -3043,12 +3079,20 @@ void memory_listener_register(MemoryListener *listener, AddressSpace *as)
     }
 
     listener_add_address_space(listener, as);
+
+    if (listener->eventfd_add || listener->eventfd_del) {
+        as->ioeventfd_notifiers++;
+    }
 }
 
 void memory_listener_unregister(MemoryListener *listener)
 {
     if (!listener->address_space) {
         return;
+    }
+
+    if (listener->eventfd_add || listener->eventfd_del) {
+        listener->address_space->ioeventfd_notifiers--;
     }
 
     listener_del_address_space(listener, listener->address_space);

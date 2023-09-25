@@ -179,7 +179,8 @@ static void replication_child_perm(BlockDriverState *bs, BdrvChild *c,
     return;
 }
 
-static int64_t coroutine_fn replication_co_getlength(BlockDriverState *bs)
+static int64_t coroutine_fn GRAPH_RDLOCK
+replication_co_getlength(BlockDriverState *bs)
 {
     return bdrv_co_getlength(bs->file->bs);
 }
@@ -220,10 +221,9 @@ static int replication_return_value(BDRVReplicationState *s, int ret)
     return ret;
 }
 
-static coroutine_fn int replication_co_readv(BlockDriverState *bs,
-                                             int64_t sector_num,
-                                             int remaining_sectors,
-                                             QEMUIOVector *qiov)
+static int coroutine_fn GRAPH_RDLOCK
+replication_co_readv(BlockDriverState *bs, int64_t sector_num,
+                     int remaining_sectors, QEMUIOVector *qiov)
 {
     BDRVReplicationState *s = bs->opaque;
     int ret;
@@ -244,11 +244,9 @@ static coroutine_fn int replication_co_readv(BlockDriverState *bs,
     return replication_return_value(s, ret);
 }
 
-static coroutine_fn int replication_co_writev(BlockDriverState *bs,
-                                              int64_t sector_num,
-                                              int remaining_sectors,
-                                              QEMUIOVector *qiov,
-                                              int flags)
+static int coroutine_fn GRAPH_RDLOCK
+replication_co_writev(BlockDriverState *bs, int64_t sector_num,
+                      int remaining_sectors, QEMUIOVector *qiov, int flags)
 {
     BDRVReplicationState *s = bs->opaque;
     QEMUIOVector hd_qiov;
@@ -544,12 +542,15 @@ static void replication_start(ReplicationState *rs, ReplicationMode mode,
             return;
         }
 
+        bdrv_graph_wrlock(bs);
+
         bdrv_ref(hidden_disk->bs);
         s->hidden_disk = bdrv_attach_child(bs, hidden_disk->bs, "hidden disk",
                                            &child_of_bds, BDRV_CHILD_DATA,
                                            &local_err);
         if (local_err) {
             error_propagate(errp, local_err);
+            bdrv_graph_wrunlock();
             aio_context_release(aio_context);
             return;
         }
@@ -560,9 +561,12 @@ static void replication_start(ReplicationState *rs, ReplicationMode mode,
                                               BDRV_CHILD_DATA, &local_err);
         if (local_err) {
             error_propagate(errp, local_err);
+            bdrv_graph_wrunlock();
             aio_context_release(aio_context);
             return;
         }
+
+        bdrv_graph_wrunlock();
 
         /* start backup job now */
         error_setg(&s->blocker,
@@ -668,10 +672,13 @@ static void replication_done(void *opaque, int ret)
     if (ret == 0) {
         s->stage = BLOCK_REPLICATION_DONE;
 
+        bdrv_graph_wrlock(NULL);
         bdrv_unref_child(bs, s->secondary_disk);
         s->secondary_disk = NULL;
         bdrv_unref_child(bs, s->hidden_disk);
         s->hidden_disk = NULL;
+        bdrv_graph_wrunlock();
+
         s->error = 0;
     } else {
         s->stage = BLOCK_REPLICATION_FAILOVER_FAILED;
@@ -764,7 +771,6 @@ static BlockDriver bdrv_replication = {
 
     .is_filter                  = true,
 
-    .has_variable_length        = true,
     .strong_runtime_opts        = replication_strong_runtime_opts,
 };
 
